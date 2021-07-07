@@ -123,6 +123,20 @@ type carbonserverConfig struct {
 	FileListCache   string `toml:"file-list-cache"`
 }
 
+type usageQuotaConfig struct {
+	Pattern string
+	Quota   struct {
+		Metrics    int
+		DataPoints int
+		Size       int
+	}
+	Usage struct {
+		Metrics    int
+		DataPoints int
+		Size       int
+	}
+}
+
 type pprofConfig struct {
 	Listen  string `toml:"listen"`
 	Enabled bool   `toml:"enabled"`

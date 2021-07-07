@@ -11,6 +11,7 @@ import (
 	"unsafe"
 
 	trigram "github.com/dgryski/go-trigram"
+	"github.com/go-graphite/go-carbon/points"
 )
 
 // debug codes diff for reference: https://play.golang.org/p/FxuvRyosk3U
@@ -316,13 +317,79 @@ type trieIndex struct {
 	depth         uint64
 	longestMetric string
 	trigrams      map[*trieNode][]uint32
+
+	quota []Policy
 }
 
 type trieNode struct {
 	c         []byte // TODO: look for a more compact/compressed formats
 	childrens *[]*trieNode
 	gen       uint8
+
+	meta trieMeta
 }
+
+type trieMeta interface{ trieMeta() }
+
+// t0
+// t1
+// t2
+// t3
+//
+// t4
+// t5
+// t2
+// t2
+//
+// 4
+//
+// t5
+// t7
+//
+// 7200
+// 4800
+//
+// [ooo/backfill/overwrite buffer]
+//
+// 1s:2d,1m:31d,1h:10y
+// 1800
+//
+// 5_000_000 * 7200 * 12 * 0.5 = 216_000_000_000
+//
+// type index struct {
+// }
+//
+// type buffer struct {
+// 	propagatedAt time.Time
+//
+// }
+//
+// * disk scan
+// * multiple index blocks (?)
+// * peoredically index
+//
+// * use gzip for index blocks
+//
+// metric path
+// meta data block (128 bytes)
+//
+
+type fileMeta struct {
+	// data         whisper.Cblock
+	data         []points.Point
+	propagatedAt int64
+	ranges       []int64
+}
+
+func (fm *fileMeta) trieMeta() {}
+
+type dirMeta struct {
+	metrics    int
+	dataPoints int
+	size       int
+}
+
+func (dm *dirMeta) trieMeta() {}
 
 var emptyTrieNodes = &[]*trieNode{}
 
@@ -799,6 +866,51 @@ func (ti *trieIndex) allMetrics(sep byte) []string {
 	return files
 }
 
+func (ti *trieIndex) walk(fn func() error) []string {
+	var files = make([]string, 0, ti.fileCount)
+	var depth = ti.getDepth() + trieDepthBuffer
+	var nindex = make([]int, depth)
+	var ncindex int
+	var cur = ti.root
+	var curChildrens = cur.getChildrens()
+	var trieNodes = make([]*trieNode, depth)
+	for {
+		if nindex[ncindex] >= len(curChildrens) {
+			goto parent
+		}
+
+		trieNodes[ncindex] = cur
+		cur = cur.getChild(curChildrens, nindex[ncindex])
+		curChildrens = cur.getChildrens()
+		ncindex++
+		if ncindex >= len(trieNodes)-1 {
+			goto parent
+		}
+
+		if cur.file() {
+			files = append(files, cur.fullPath(sep, trieNodes[:ncindex]))
+			goto parent
+		}
+
+		continue
+
+	parent:
+		nindex[ncindex] = 0
+		ncindex--
+		if ncindex < 0 {
+			break
+		}
+		nindex[ncindex]++
+		cur = trieNodes[ncindex]
+		curChildrens = cur.getChildrens()
+		continue
+	}
+
+	sort.Strings(files)
+
+	return files
+}
+
 func (ti *trieIndex) dump(w io.Writer) {
 	var depth = ti.getDepth() + trieDepthBuffer
 	var nindex = make([]int, depth)
@@ -1211,4 +1323,127 @@ func (listener *CarbonserverListener) expandGlobsTrie(query string) ([]string, [
 	}
 
 	return files, leafs, nil
+}
+
+// ns1.sys.*.host.*: 10_000
+// ns1.sys.*: 20_000
+// ns1.app.*: 10_000
+// ns1.*: 3_000_000
+// ns2.*: 1_000_000
+// *: 5_000_000
+type Policy struct {
+	Pattern string
+	Quota   struct {
+		Files int
+		Disk  int
+	}
+	Usage struct {
+		Files int
+		Disk  int
+	}
+
+	matcher *gmatcher
+}
+
+// TODO
+func (ti *trieIndex) refreshQuota(policies []string) error {
+	//
+}
+
+// TODO
+func (ti *trieIndex) addPoint(points.Points) {
+	var files = make([]string, 0, ti.fileCount)
+	var depth = ti.getDepth() + trieDepthBuffer
+	var nindex = make([]int, depth)
+	var ncindex int
+	var cur = ti.root
+	var curChildrens = cur.getChildrens()
+	var trieNodes = make([]*trieNode, depth)
+	for {
+		if nindex[ncindex] >= len(curChildrens) {
+			goto parent
+		}
+
+		trieNodes[ncindex] = cur
+		cur = cur.getChild(curChildrens, nindex[ncindex])
+		curChildrens = cur.getChildrens()
+		ncindex++
+		if ncindex >= len(trieNodes)-1 {
+			goto parent
+		}
+
+		if cur.file() {
+			files = append(files, cur.fullPath(sep, trieNodes[:ncindex]))
+			goto parent
+		}
+
+		continue
+
+	parent:
+		nindex[ncindex] = 0
+		ncindex--
+		if ncindex < 0 {
+			break
+		}
+		nindex[ncindex]++
+		cur = trieNodes[ncindex]
+		curChildrens = cur.getChildrens()
+		continue
+	}
+
+	sort.Strings(files)
+
+	return files
+}
+
+// TODO
+func (ti *trieIndex) encode(buf io.Writer) error {
+	var files = make([]string, 0, ti.fileCount)
+	var depth = ti.getDepth() + trieDepthBuffer
+	var nindex = make([]int, depth)
+	var ncindex int
+	var cur = ti.root
+	var curChildrens = cur.getChildrens()
+	var trieNodes = make([]*trieNode, depth)
+	for {
+		if nindex[ncindex] >= len(curChildrens) {
+			goto parent
+		}
+
+		trieNodes[ncindex] = cur
+		cur = cur.getChild(curChildrens, nindex[ncindex])
+		curChildrens = cur.getChildrens()
+		ncindex++
+		if ncindex >= len(trieNodes)-1 {
+			goto parent
+		}
+
+		if cur.file() {
+			files = append(files, cur.fullPath(sep, trieNodes[:ncindex]))
+			goto parent
+		}
+
+		continue
+
+	parent:
+		nindex[ncindex] = 0
+		ncindex--
+		if ncindex < 0 {
+			break
+		}
+		nindex[ncindex]++
+		cur = trieNodes[ncindex]
+		curChildrens = cur.getChildrens()
+		continue
+	}
+
+	sort.Strings(files)
+
+	return files
+}
+
+// TODO
+func (ti *trieIndex) decode(buf io.Writer) error {
+	// metric
+	// data
 }
